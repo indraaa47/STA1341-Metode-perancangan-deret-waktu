@@ -1,0 +1,382 @@
+---
+title: "Pertemuan 3"
+author: "Indra Maulana"
+output:
+  html_document:
+    theme: paper
+    toc: true
+    toc_float: true
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(readxl)
+library(dLagM)
+library(dynlm)
+library(MLmetrics)
+library(lmtest)
+library(car)
+library(carData)
+library(RMySQL)
+library(readr)
+library(tidyr)
+library(dplyr)
+```
+
+## Impor dan Persiapan Data
+
+```{r}
+data <- read.csv("C:/Users/LENOVO/Downloads/Turbine_Data.csv",header = TRUE,sep = ",")
+str(data)
+```
+
+```{r}
+df <- data.frame(data$X,data$ActivePower,data$WindSpeed)
+head(df)
+str(df)
+df <- df[complete.cases(df), ]
+head(df)
+```
+
+```{r}
+sum(is.na(df))
+```
+
+```{r memisahkan data sesuai tanggal dan waktu}
+df$Time <- format(as.POSIXct(df$data.X,format="%Y-%m-%d %H:%M:%S"),"%H:%M")
+  df$Hours <- format(as.POSIXct(df$data.X,format="%Y-%m-%d %H:%M:%S"),"%d")
+    df <- df[,-1]
+head(df)
+```
+
+```{r memisahkan data sesuai hari}
+day.01 <- df %>% filter(Hours == "01")
+day.02 <- df %>% filter(Hours == "02")
+day.03 <- df %>% filter(Hours == "03")
+day.04 <- df %>% filter(Hours == "04")
+day.05 <- df %>% filter(Hours == "05")
+day.06 <- df %>% filter(Hours == "06")
+```
+
+```{r pilih data pada tangga 01 dan 02}
+
+df.01 <- day.01[,c(1,3)]                       # data tanggal 01 01 2018
+names(df.01)[1:2] <-c("Y0","t") 
+head(df.01)
+
+df.02 <- day.02[,-4]                           # data tanggal 02 01 2018
+names(df.02)[1:3] <- c("Yt","Xt","t")
+head(df.02)
+
+data <- merge(x = df.01, y = df.02, by = "t")
+data <- data %>% distinct(t, .keep_all = TRUE)
+data[,1] <- c(1:144)
+head(data)
+```
+
+```{r}
+summary(data)
+```
+
+## Pembagian Data
+
+```{r}
+#Split Data
+ActivePower<-data[1:138,]
+head(ActivePower)
+test<-data[139:144,]
+head(test)
+```
+
+```{r}
+#data time series
+ActivePower.ts<-ts(ActivePower)
+test.ts<-ts(test)
+data.ts<-ts(data)
+```
+
+## Model Koyck
+
+### Pemodelan
+
+```{r}
+model.koyck <- koyckDlm(x = ActivePower$Xt, y = ActivePower$Yt)
+summary(model.koyck)
+AIC(model.koyck)
+BIC(model.koyck)
+```
+
+Dari hasil tersebut, didapat bahwa peubah $x_t$ dan $y_{t-1}$ memiliki nilai $P-Value=0.0001 < 0.05$. Hal ini menunjukkan bahwa peubah $x_t$ dan $y_{t-1}$ berpengaruh signifikan terhadap $y$. Adapun model keseluruhannya adalah sebagai berikut
+
+$$
+\hat{Y_t}=-1383+353.3X_t-0.101Y_{t-1}
+$$
+
+### Peramalan dan Akurasi
+
+Berikut adalah hasil peramalan y untuk 6 periode kedepan menggunakan model koyck
+
+```{r}
+fore.koyck <- forecast(model = model.koyck, x=test$Xt, h=6)
+fore.koyck
+mape.koyck <- MAPE(fore.koyck$forecasts, test$Yt)
+
+#akurasi data 
+GoF(model.koyck)
+```
+
+## Regression with Distributed Lag
+
+### Pemodelan (Lag=2)
+
+```{r}
+model.dlm <- dlm(x = ActivePower$Xt,y = ActivePower$Yt , q = 2)
+summary(model.dlm)
+AIC(model.dlm)
+BIC(model.dlm)
+```
+
+Dari hasil diatas, didapat bahwa $P-value$ dari intercept dan $x_{t-1}= 2.2 \times 10^{-16} <0.05$. Hal ini menunjukkan bahwa intercept dan $x_{t-1}$ berpengaruh signifikan terhadap $y$. Adapun model keseluruhan yang terbentuk adalah sebagai berikut
+
+$$
+\hat{Y_t}=-777.5927+251.855X_t-10.2985X_{t-1}+0.9311X_{t-2}
+$$
+
+### Peramalan dan Akurasi
+
+Berikut merupakan hasil peramalan $y$ untuk 6 periode kedepan
+
+```{r}
+fore.dlm <- forecast(model = model.dlm, x=test$Xt, h=6)
+fore.dlm
+mape.dlm <- MAPE(fore.dlm$forecasts, test$Yt)
+
+#akurasi 
+GoF(model.dlm)
+```
+
+### *Lag* Optimum
+
+```{r}
+#penentuan lag optimum 
+finiteDLMauto(formula = Yt ~ Xt,
+              data = data.frame(ActivePower), q.min = 1, q.max = 67,
+              model.type = "dlm", error.type = "AIC", trace = FALSE)
+```
+
+Berdasarkan output tersebut, lag optimum didapatkan ketika lag=6. Selanjutnya dilakukan pemodelan untuk lag=6
+
+```{r}
+#model dlm dengan lag optimum
+model.dlm2 <- dlm(x = ActivePower$Xt,y = ActivePower$Yt , q = 67)
+summary(model.dlm2)
+AIC(model.dlm2)
+BIC(model.dlm2)
+```
+
+Dari hasil tersebut terdapat beberapa peubah yang berpengaruh signifikan terhadap taraf nyata 5% yaitu $x_t$ , $x_{t-2}$ , $x_{t-4}$ , ....,$x_{t-67}$. Adapun keseluruhan model yang terbentuk adalah
+
+$$
+\hat{Y_t}=160.9934+253.3195X_t-45.7725X_{t-1}+...+17.1001X_{t-67}
+$$
+
+Adapun hasil peramalan 6 periode kedepan menggunakan model tersebut adalah sebagai berikut
+
+```{r}
+#peramalan dan akurasi
+fore.dlm.2 <- forecast(model = model.dlm2, x=test$Xt, h=6)
+mape.dlm2<- MAPE(fore.dlm.2$forecasts, test$Yt)
+
+#akurasi 
+GoF(model.dlm2)
+```
+
+Model tersebut merupakan model yang tidak baik dengan nilai MAPE yang lebih dari 10%.
+
+## Model Autoregressive
+
+### Pemodelan
+
+```{r}
+model.ardl <- ardlDlm(x = ActivePower$Xt, y = ActivePower$Yt, p = 1 , q = 1)
+summary(model.ardl)
+AIC(model.ardl)
+BIC(model.ardl)
+```
+
+Ket : $p$ adalah integer yang mewakili panjang *lag* yang terbatas dan $q$ adalah integer yang merepresentasikan ordo dari proses *autoregressive*.
+
+Hasil di atas menunjukkan bahwa selain peubah $x_{t-1}$, hasil uji t menunjukkan nilai-p pada peubah $\ge0.05$ Hal ini menunjukkan bahwa peubah $x_{t-1}$ berpengaruh signifikan terhadap $y_t$, sementara $x_t$ dan $y_{t-1}$ berpengaruh signifikan terhadap $y_t$. Model keseluruhannya adalah sebagai berikut:
+
+$$
+\hat{Y}=-694.68125+250.94992X_t-32.12488X_{t-1}+0.08815Y_{t-1}
+$$
+
+### Peramalan dan Akurasi
+
+```{r}
+fore.ardl <- forecast(model = model.ardl, x=test$Xt, h=6)
+fore.ardl
+```
+
+Data di atas merupakan hasil peramalan untuk 6 periode ke depan menggunakan Model Autoregressive dengan $p=1$ dan $q=1$.
+
+```{r}
+mape.ardl <- MAPE(fore.ardl$forecasts, test$Yt)
+mape.ardl
+
+#akurasi
+GoF(model.ardl)
+```
+
+Berdasarkan akurasi di atas, terlihat bahwa nilai MAPE keduanya tidak jauh berbeda. Artinya, model regresi dengan distribusi lag ini tidak overfitted atau underfitted
+
+### *Lag* Optimum
+
+```{r}
+#penentuan lag optimum
+model.ardl.opt <- ardlBoundOrders(data = data.frame(data), ic = "AIC", 
+                                  formula = Yt ~ Xt )
+min_p=c()
+for(i in 1:15){
+  min_p[i]=min(model.ardl.opt$Stat.table[[i]])
+}
+q_opt=which(min_p==min(min_p, na.rm = TRUE))
+p_opt=which(model.ardl.opt$Stat.table[[q_opt]] == 
+              min(model.ardl.opt$Stat.table[[q_opt]], na.rm = TRUE))
+data.frame("q_optimum" = q_opt, "p_optimum" = p_opt, 
+           "AIC"=model.ardl.opt$min.Stat)
+```
+
+Dari tabel di atas, dapat terlihat bahwa nilai AIC terendah didapat ketika $p=2$ dan $q=15$, yaitu sebesar `1686.413`. Artinya, model autoregressive optimum didapat ketika $p=2$ dan $q=15$.
+
+#### Pemodelan Lag Optimum
+
+```{r}
+model.ardl.optimum <- ardlDlm(x = ActivePower$Xt, y = ActivePower$Yt, p = 2 , q = 15)
+summary(model.ardl.optimum)
+AIC(model.ardl.optimum)
+BIC(model.ardl.optimum)
+```
+
+Hasil di atas menunjukkan bahwa selain peubah $x_{t-1}$, hasil uji t menunjukkan nilai-p pada peubah $\ge0.05$ Hal ini menunjukkan bahwa peubah $x_{t-1}$ berpengaruh signifikan terhadap $y_t$, sementara $x_t$ dan $y_{t-1}$ berpengaruh signifikan terhadap $y_t$. Model keseluruhannya adalah sebagai berikut:
+
+$$
+24.1\hat{Y}=-633.9+253.6X_t-32.12488X_{t-1}+...+0.00072Y_{t-15}
+$$
+
+#### Peramalan dan Akurasi Optimum
+
+```{r}
+fore.ardl.optimum <- forecast(model = model.ardl.optimum, x=test$Xt, h=6)
+fore.ardl.optimum
+```
+
+```{r}
+mape.ardl.optimum <- MAPE(fore.ardl.optimum$forecasts, test$Yt)
+mape.ardl.optimum
+
+#akurasi
+GoF(model.ardl.optimum)
+```
+
+Berdasarkan akurasi di atas, terlihat bahwa nilai MAPE keduanya tidak jauh berbeda. Artinya, model regresi dengan distribusi lag ini tidak overfitted atau underfitted
+
+## Pemodelan DLM dan ARDL dengan Library `dynlm`
+
+```{r}
+#sama dengan model dlm q=1
+cons_lm1 <- dynlm(Yt ~ Xt+L(Xt),data = ActivePower.ts)
+#sama dengan model ardl p=1 q=0
+cons_lm2 <- dynlm(Yt ~ Xt+L(Yt),data = ActivePower.ts)
+#sama dengan ardl p=1 q=1
+cons_lm3 <- dynlm(Yt ~ Xt+L(Xt)+L(Yt),data = ActivePower.ts)
+#sama dengan dlm p=2
+cons_lm4 <- dynlm(Yt ~ Xt+L(Xt)+L(Xt,2),data = ActivePower.ts)
+```
+
+### Ringkasan Model
+
+```{r}
+summary(cons_lm1)
+summary(cons_lm2)
+summary(cons_lm3)
+summary(cons_lm4)
+```
+
+### SSE
+
+```{r}
+deviance(cons_lm1)
+deviance(cons_lm2)
+deviance(cons_lm3)
+deviance(cons_lm4)
+```
+
+### Uji Diagnostik
+
+```{r Uji Model}
+if(require("lmtest")) encomptest(cons_lm1, cons_lm2)
+```
+
+#### Autokorelasi
+
+```{r}
+#durbin watson
+dwtest(cons_lm1)
+dwtest(cons_lm2)
+dwtest(cons_lm3)
+dwtest(cons_lm4)
+```
+
+#### Heterogenitas
+
+```{r}
+bptest(cons_lm1)
+bptest(cons_lm2)
+bptest(cons_lm3)
+bptest(cons_lm4)
+```
+
+#### Kenormalan
+
+```{r}
+shapiro.test(residuals(cons_lm1))
+shapiro.test(residuals(cons_lm2))
+shapiro.test(residuals(cons_lm3))
+shapiro.test(residuals(cons_lm4))
+```
+
+## Perbandingan Model
+
+```{r}
+akurasi <- matrix(c(mape.koyck, mape.dlm, mape.dlm2, mape.ardl))
+row.names(akurasi)<- c("Koyck","DLM 1","DLM 2","Autoregressive")
+colnames(akurasi) <- c("MAPE")
+akurasi
+```
+
+Berdasarkan nilai MAPE, model paling optimum didapat pada Model Autoregressive karena memiliki nilai MAPE yang terkecil.
+
+### Plot
+
+```{r}
+par(mfrow=c(1,1))
+plot(test$Xt, test$Yt, type="b", col="black", ylim=c(-100,1000))
+points(test$Xt, fore.koyck$forecasts,col="red")
+lines(test$Xt, fore.koyck$forecasts,col="red")
+
+points(test$Xt, fore.dlm$forecasts,col="orange")
+lines(test$Xt, fore.dlm$forecasts,col="orange")
+
+points(test$Xt, fore.dlm.2$forecasts,col="green")
+lines(test$Xt, fore.dlm.2$forecasts,col="green")
+
+points(test$Xt, fore.ardl$forecasts,col="blue")
+lines(test$Xt, fore.ardl$forecasts,col="blue")
+
+legend("topleft",c("aktual", "koyck","DLM.1","DLM.2", "autoregressive"), lty=0.1, col=c("black","red","orange","green","blue"), cex=.75)
+```
+
+Berdasarkan plot tersebut, terlihat bahwa plot yang paling mendekati data aktualnya adalah Model Autoregressive, sehingga dapat disimpulkan model terbaik dalam hal ini adalah model regresi Autoregressive
